@@ -1,3 +1,6 @@
+# draft DT functions to allow filtering of the tag columns based on selects (rather than text search)
+# not functional, and not used anywhere in the current code
+
 # Filter function to apply custom filtering
 custom_filter <- function(data, value) {
   data[grepl(paste(value, collapse = "|"), data$Tags_lookup), ]

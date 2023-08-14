@@ -1,0 +1,600 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Setup import data and process into tables
+
+```{r setup}
+row_count <- 544
+reccos_id <- "183319"
+sources_id <- "183318"
+tag_id <- "184385"
+opps_id <- "183320"
+challenges_id <- "183321"
+refs_id <- "183323"
+
+# Checks if pacman installed, and installs if not. Pacman is then used to check and load packages in the sourced scripts (largely tidyverse. Review before sourcing)
+
+if (!require("pacman")) install.packages("pacman")
+
+# Source some functions and packages 
+pacman::p_load(ggplot2, patchwork, glue, tibble)
+
+my_tables <- tribble(
+  ~name, ~id, ~row_count,
+  "recommendations", "183319", 536,
+  "sources", "183318", 94,
+  "tags", "184385", 36,
+  "opportunities", "183320", 463,
+  "challenges", "183321", 379,
+  "references", "183323", 749
+)
+
+source('R/baserow_functions.R')
+source('R/table_functions.R')
+
+# The data can be exported as excel formats from baserow but may be missing keys.
+# pacman::p_load(readxl)
+# inquiry <- readxl::read_xlsx("data/genAIInquiry.xlsm")
+
+# head(sources_data) %>% datapasta::df_paste()
+
+# To add token to profile and use in call, use e.g.:
+# usethis::edit_r_profile("user")
+# response <- GET(url = api_url, add_headers(Authorization = paste("Token", Sys.getenv("BASEROW_AJET_TOKEN"))))
+
+```
+
+
+```{r importdata}
+# Import key tables
+
+# If you want to get the raw JSON files (e.g., to publish them with code)
+# set raw = TRUE, this will save the JSON (hopefully correctly concatenated)
+# identical(tibble_data, y)
+# and import the data into a tidy R table 
+#tibble_data <- table_data(1, pages, table_id, raw = TRUE)
+# For single tables, like this is simple (raw defauls to FALSE so can be removed)
+savejson <- TRUE
+
+recommendations_data <- table_data(1, pages(row_count), reccos_id, raw = savejson)
+sources_data <- table_data(1,1,sources, raw = savejson) 
+tags_data <- table_data(1,1,tag_id, raw = savejson)
+
+# To get all tables, I can't see in documentation how to retrieve total rows (trying pages till it fails I guess works), so manually set that in the tribble and map over:
+result_list <- pmap(my_tables, function(name, id, row_count) {
+  start <- 1
+  end <- pages(row_count)
+  raw <- savejson
+  
+  table_data(start, end, id, raw)
+})
+
+# If you want them out of the list
+result_list <- setNames(result_list, paste0(my_tables$name, "_data"))
+list2env(result_list, envir = .GlobalEnv)
+
+rm(result_list)
+
+## If you have the json files and want to read them in, some variation on this
+## If you the json files are from the function above (raw = TRUE) it's just a representation
+## of the imported tables, not the original raw json. So this probably won't work to import that raw json either.
+raw_files <- list.files("data/", pattern = ".json", full.names = T)
+raw_names <- setNames(raw_files, map(raw_files, ~basename(.x) %>% tools::file_path_sans_ext())) %>% names() %>% map(., ~filter(my_tables, id == .x) %>% pull(name)) %>% unlist()
+
+result_list <- map(raw_files, ~{
+   .x %>%
+   jsonlite::fromJSON() %>%
+     as_tibble()
+ })
+
+result_list <- setNames(result_list, paste0(raw_names, "_data"))
+list2env(result_list, envir = .GlobalEnv)
+
+#or for one
+# sources_data <- jsonlite::fromJSON("data/183318.json") %>% 
+#   as_tibble()
+
+
+```
+
+```{r tidydata}
+###########################################################################
+###########################################################################
+######################### Process data into tidy tibbles
+###########################################################################
+
+sources_data <- sources_data %>% 
+  janitor::clean_names() %>%
+  unnest_wider(type_of_org, names_sep = "_", names_repair = "minimal") 
+
+tags_data <- tags_data %>% 
+  janitor::clean_names() %>%
+    unnest_wider(c(name,tag_group), names_sep = "_", names_repair = "minimal") %>% 
+    select(matches("name_|tag_group_")) %>%
+  rename_with(., ~gsub(pattern = "name_", replacement = "tag_", x = .x), starts_with("name_"))
+
+inquiry <- recommendations_data %>%
+  unnest_wider(col = c(Sources, Lookup, Tags, Tags_lookup),
+         names_sep = "_", names_repair = "minimal") %>%
+  select(-contains("_id")) %>%
+  group_by(id) %>%
+  summarise(across(c(Recommendation, paste0(c("Sources", "Lookup", "Tags", "Tags_lookup"),"_value")),
+                   ~paste(unlist(.x), collapse = ", "), .names = "{col}"), .groups = "drop")
+
+
+inquiry <- inquiry %>%
+  rename_with(~str_remove(., "_value"), contains("_value"))
+
+```
+
+## Create summaries
+
+Summary of submitter types
+```{r summariseSources}
+
+sources_data %>%
+    select(type_of_org_value) %>%
+    group_by(type_of_org_value) %>%
+      tally() %>% 
+      ungroup() %>%
+  janitor::adorn_totals(where="row", name = "Total") %>%
+  huxtable::as_hux() %>%
+    my_hux_theme() %>%
+  huxtable::quick_html(file = paste0("output/",Sys.Date(),"_submissions_by_group.html"))
+
+
+```
+
+
+Inclusion of recommendations/uses/challenges by submission
+```{r instances}
+
+#check this isn't returning some with NA (I think I've removed those) and then use it to tally any >0 for each type
+
+# sources_data %>%
+#   mutate(recommendations_count = map_int(recommendations, nrow)) %>%
+#   group_by(type_of_org_value) %>%
+#   summarise(total_recommendations = sum(recommendations_count),
+#             n_with_no_recommendations = length(which(recommendations_count == 0)),
+#             mean_recommendations = mean(recommendations_count), 
+#             sd_recommendations = sd(recommendations_count)) %>%
+#   janitor::adorn_totals(where="row", name = "Total") %>%
+#   huxtable::as_hux() %>%
+#   my_hux_theme() %>%
+#   huxtable::quick_html(file = paste0("output/",Sys.Date(),"_recommendations_by_group.html"))
+
+summarise_vars <- function(df, vars) {
+    map(vars, ~{
+        var <- sym(.x)
+        var_count <- paste0(.x, "_count")
+        #{{ var_count }} should also work in places of .data[[var_count]]
+        df %>%
+            mutate(!!var_count := map_int(.data[[.x]], nrow)) %>%
+            group_by(type_of_org_value) %>%
+            summarise(!!paste0("total_", .x) := sum(.data[[var_count]]),
+                      !!paste0("n_with_no_", .x) := sum(.data[[var_count]] == 0),
+                      !!paste0("n_with_any_", .x) := sum(.data[[var_count]] > 0),
+                      !!paste0("proportion_n_with_any_", .x) := ceiling((sum(.data[[var_count]] > 0) / (sum(.data[[var_count]] > 0) + sum(.data[[var_count]] == 0)))*100),
+                      !!paste0("mean_", .x) := mean(.data[[var_count]]), 
+                      !!paste0("sd_", .x) := sd(.data[[var_count]])) %>%
+          janitor::adorn_totals(where="row", name = "Total") %>%
+          huxtable::as_hux() %>%
+          my_hux_theme() %>%
+          huxtable::quick_html(file = paste0("output/",Sys.Date(),"_",.x,"_by_group.html"))
+    })
+}
+
+summarise_vars(sources_data, c("recommendations", "risks_challenges", "uses_opportunities", "references_footnotes")) 
+
+# sources_data %>%
+#   mutate(uses_count = map_int(uses_opportunities, nrow)) %>%
+#   group_by(type_of_org_value) %>%
+#   summarise(total_opportunities = sum(uses_count),
+#             mean_opportunities = mean(uses_count), 
+#             sd_opportunities = sd(uses_count)) %>%
+#   huxtable::as_hux() %>%
+#   my_hux_theme() %>%
+#   huxtable::quick_html(file = paste0("output/",Sys.Date(),"_uses_by_group.html"))
+# 
+# 
+# sources_data %>%
+#   mutate(risks_count = map_int(risks_challenges, nrow)) %>%
+#   group_by(type_of_org_value) %>%
+#   summarise(total_opportunities = sum(risks_count),
+#             mean_opportunities = mean(risks_count), 
+#             sd_opportunities = sd(risks_count)) %>%
+#   huxtable::as_hux() %>%
+#   my_hux_theme() %>%
+#   huxtable::quick_html(file = paste0("output/",Sys.Date(),"_challenges_by_group.html"))
+# 
+# 
+# sources_data %>%
+#   mutate(references_count = map_int(references_footnotes, nrow)) %>%
+#   group_by(type_of_org_value) %>%
+#   summarise(total_opportunities = sum(references_count),
+#             mean_opportunities = mean(references_count), 
+#             sd_opportunities = sd(references_count)) %>%
+#   huxtable::as_hux() %>%
+#   my_hux_theme() %>%
+#   huxtable::quick_html(file = paste0("output/",Sys.Date(),"_references_by_group.html"))
+
+
+```
+
+
+Quick summary of tags overall use
+```{r summariseTags}
+
+tags_filter <- unique(unlist(strsplit(inquiry$Tags_lookup, ",")))
+
+inquiry$Tags_lookup %>%
+  strsplit(., ",") %>%
+  unlist() %>%
+  stringr::str_trim("both") %>%
+  table() %>%
+  huxtable::as_hux() %>%
+    my_hux_theme() %>%
+  huxtable::quick_html(file = paste0("output",Sys.Date(),"_tags_overall.html"))
+
+```
+
+Summary of tags by group
+```{r groupwiseTags}
+
+inquiry %>% 
+  select(Tags_lookup) %>%
+  separate_rows(Tags_lookup, sep = ",\\s*") %>%
+  filter(Tags_lookup != "not-a-recommendation") %>%
+  filter(Tags_lookup != "DISTINCTIVE") %>%
+  left_join(tags_data[c("tag_value", "tag_group_value")], by=c(Tags_lookup="tag_value")) %>%
+  na.omit() %>%
+  arrange(tag_group_value) %>%
+  group_by(tag_group_value) %>%
+  tally()
+
+
+# Summarise by tag group, with subtotals (could be converted to use janitor throughout more consistently)
+# Note, totals are _non-distinct_, because each recommendation might have multiple tags
+inquiry %>%
+    select(Tags_lookup) %>%
+    separate_rows(Tags_lookup, sep = ",\\s*") %>%
+    filter(Tags_lookup != "not-a-recommendation") %>%
+    filter(Tags_lookup != "DISTINCTIVE") %>%
+    left_join(tags_data[c("tag_value", "tag_group_value")], by=c(Tags_lookup="tag_value")) %>%
+    na.omit() %>%
+    arrange(tag_group_value) %>%
+    group_by(tag_group_value, Tags_lookup) %>%
+    tally() %>%
+    ungroup() %>%
+    group_by(tag_group_value) %>%
+    group_modify(~ .x %>% janitor::adorn_totals(where = "row", na.rm = T, name = "Subtotal")) %>% ungroup() %>%
+    janitor::adorn_totals(where="row", name = "Total") %>%
+  huxtable::as_hux() %>%
+      my_hux_theme() %>%
+  huxtable::quick_html(file = paste0("output/",Sys.Date(),"_tags_by_group.html"))
+
+
+```
+
+
+```{r tagsBySources}
+
+x <- left_join(inquiry, sources_data, by=c(Sources="submission_number")) 
+x <- x %>% 
+  select(Sources, Tags, type_of_org_value) %>%
+#  unnest(col = "type_of_org") %>%
+  arrange(Tags, type_of_org_value) %>% 
+  mutate(across(!Sources, ~ tidyr::replace_na(., "NA")))
+  #mutate(across(!id, ~ tidyr::replace_na(., "NA")))
+
+x <- x %>% 
+  filter(Sources != "NA")
+
+x <- x %>%
+    separate_rows(Tags, sep = ",\\s*")
+
+x <- x %>%
+  filter(Tags != "not-a-recommendation") %>%
+  filter(Tags != "DISTINCTIVE") %>%
+  filter(Tags != "")
+
+x <- x %>%
+  left_join(tags_data[c("tag_value", "tag_group_value")], by=c(Tags="tag_value"))
+  
+```
+
+
+```{r heatmapr}
+# Heatmap table
+heatmap_table <- x %>%
+  group_by(type_of_org_value, Tags) %>%
+  summarise(n = n_distinct(Sources)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = type_of_org_value, values_from = n, values_fill = 0)
+
+# Plot heatmap
+heatmap_melting <- heatmap_table %>%
+  pivot_longer(cols = -Tags, names_to = "Type", values_to = "Count") %>%
+  group_by(Tags) %>%
+  mutate(Total_Tag = sum(Count)) %>%
+  ungroup() %>% 
+  group_by(Type) %>%
+    mutate(Total_Type = sum(Count)) %>%
+  mutate(Proportion_By_Tags = round(Count / Total_Tag * 100,0),
+         Proportion_By_Type = round(Count / Total_Type * 100,0))
+
+
+# Panel 1: Absolute values weighted by overall emphasis
+heatmap_plot1 <- heatmap_melting %>%
+  ggplot(aes(x = Type, y = Tags, fill = Count, label = Count)) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Value by Tags Crosstab Heatmap",
+       x = "Type",
+       y = "Tags",
+       fill = "Count",
+       caption = "Absolute values"
+      ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position="none")
+
+# Panel 2: Tag weightings weighted by Proportion_by_tags
+heatmap_plot2 <- heatmap_melting %>%
+  ggplot(aes(x = Type, y = Tags, fill = Proportion_By_Tags, label = paste0(Proportion_By_Tags))) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Focus of submissions by tag spread (%)",
+       x = "Type",
+       y = NULL,
+       caption = "Use to see what the tag focus of each submission type was"
+       ) +
+       #fill = "Proportion by Tags (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        legend.position="none")
+
+# Panel 3: Type weightings weighted by Proportion_by_type
+heatmap_plot3 <- heatmap_melting %>%
+  ggplot(aes(x = Type, y = Tags, fill = Proportion_By_Type, label = paste0(Proportion_By_Type))) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Proportion of submission types by tag (%)",
+       x = "Type",
+       y = NULL,
+       caption = "Use to see for each tag, which submission type occurred most"
+       ) +
+       #fill = "Proportion by Type (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        legend.position="none")
+
+custom_theme <- theme(text = element_text(size = 5),
+                      legend.text = element_text(size = 6),
+                      title = element_text(size = 7),
+                      axis.text = element_text(size = 7))
+
+# Combine the three plots using patchwork
+final_plot <- heatmap_plot1 + custom_theme +
+  heatmap_plot2 +  custom_theme +
+  heatmap_plot3 + custom_theme +
+  plot_layout(ncol = 3)  # Arra nge plots in a single column
+
+# Display the combined plot
+final_plot
+
+ggplot2::ggsave(paste0("output/", Sys.Date(),"_tag_level_heatmap.png"), final_plot, height = 130, width = 220, units = "mm")
+
+```
+
+
+```{r heatmaprgrouped}
+# Heatmap table
+heatmap_table <- x %>%
+  group_by(type_of_org_value, tag_group_value) %>%
+  summarise(n = n_distinct(Sources)) %>%
+  ungroup() %>%
+  pivot_wider(names_from = type_of_org_value, values_from = n, values_fill = 0)
+
+# Plot heatmap
+heatmap_melting <- heatmap_table %>%
+  pivot_longer(cols = -tag_group_value, names_to = "Type", values_to = "Count") %>%
+  group_by(tag_group_value) %>%
+  mutate(Total_Tag = sum(Count)) %>%
+  ungroup() %>% 
+  group_by(Type) %>%
+    mutate(Total_Type = sum(Count)) %>%
+  mutate(Proportion_By_tag_group_value = round(Count / Total_Tag * 100,0),
+         Proportion_By_Type = round(Count / Total_Type * 100,0))
+
+
+# Panel 1: Absolute values weighted by overall emphasis
+heatmap_plot4 <- heatmap_melting %>%
+  ggplot(aes(x = Type, y = tag_group_value, fill = Count, label = Count)) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Value by tag_group_value Crosstab Heatmap",
+       x = "Type",
+       y = "tag_group_value",
+       fill = "Count",
+       caption = "Absolute values"
+      ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position="none")
+
+# Panel 2: Tag weightings weighted by Proportion_by_tag_group_value
+heatmap_plot5 <- heatmap_melting %>%
+  ggplot(aes(x = Type, y = tag_group_value, fill = Proportion_By_tag_group_value, label = paste0(Proportion_By_tag_group_value))) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Focus of submissions by tag spread (%)",
+       x = "Type",
+       y = NULL,
+       caption = "Use to see what the tag focus of each submission type was"
+       ) +
+       #fill = "Proportion by tag_group_value (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        legend.position="none")
+
+# Panel 3: Type weightings weighted by Proportion_by_type
+heatmap_plot6 <- heatmap_melting %>%
+  ggplot(aes(x = Type, y = tag_group_value, fill = Proportion_By_Type, label = paste0(Proportion_By_Type))) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Proportion of submission types by tag (%)",
+       x = "Type",
+       y = NULL,
+       caption = "Use to see for each tag, which submission type occurred most"
+       ) +
+       #fill = "Proportion by Type (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        legend.position="none")
+
+custom_theme <- theme(text = element_text(size = 5),
+                      legend.text = element_text(size = 6),
+                      title = element_text(size = 7),
+                      axis.text = element_text(size = 7))
+
+# Combine the three plots using patchwork
+final_plot2 <- heatmap_plot4 + custom_theme +
+  heatmap_plot5 +  custom_theme +
+  heatmap_plot6 + custom_theme +
+  plot_layout(ncol = 3)  # Arra nge plots in a single column
+
+
+ggplot2::ggsave(paste0("output/", Sys.Date(),"_taggroup_level_heatmap.png"), final_plot2, height = 130, width = 220, units = "mm")
+
+```
+
+
+```{r heatmaprgroupedCOUNT}
+# Heatmap table - This one is not based on distinct sources, so it's the overall count
+heatmap_table3 <- x %>%
+  group_by(type_of_org_value, tag_group_value) %>%
+  tally(name = "n") %>%
+  ungroup() %>%
+  pivot_wider(names_from = type_of_org_value, values_from = n, values_fill = 0)
+
+# Plot heatmap
+heatmap_melting3 <- heatmap_table3 %>%
+  pivot_longer(cols = -tag_group_value, names_to = "Type", values_to = "Count") %>%
+  group_by(tag_group_value) %>%
+  mutate(Total_Tag = sum(Count)) %>%
+  ungroup() %>% 
+  group_by(Type) %>%
+    mutate(Total_Type = sum(Count)) %>%
+  mutate(Proportion_By_tag_group_value = round(Count / Total_Tag * 100,0),
+         Proportion_By_Type = round(Count / Total_Type * 100,0))
+
+
+# Panel 1: Absolute values weighted by overall emphasis
+heatmap_plot7 <- heatmap_melting3 %>%
+  ggplot(aes(x = Type, y = tag_group_value, fill = Count, label = Count)) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Value by tag_group_value Crosstab Heatmap",
+       x = "Type",
+       y = "tag_group_value",
+       fill = "Count",
+       caption = "Absolute values"
+      ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position="none")
+
+# Panel 2: Tag weightings weighted by Proportion_by_tag_group_value
+heatmap_plot8 <- heatmap_melting3 %>%
+  ggplot(aes(x = Type, y = tag_group_value, fill = Proportion_By_tag_group_value, label = paste0(Proportion_By_tag_group_value))) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Focus of submissions by tag spread (%)",
+       x = "Type",
+       y = NULL,
+       caption = "Use to see what the tag focus of each submission type was"
+       ) +
+       #fill = "Proportion by tag_group_value (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        legend.position="none")
+
+# Panel 3: Type weightings weighted by Proportion_by_type
+heatmap_plot9 <- heatmap_melting3 %>%
+  ggplot(aes(x = Type, y = tag_group_value, fill = Proportion_By_Type, label = paste0(Proportion_By_Type))) +
+  geom_tile() +
+  geom_text(size = 3, color = "black", show.legend = FALSE) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Proportion of submission types by tag (%)",
+       x = "Type",
+       y = NULL,
+       caption = "Use to see for each tag, which submission type occurred most"
+       ) +
+       #fill = "Proportion by Type (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_blank(),
+        legend.position="none")
+
+custom_theme <- theme(text = element_text(size = 5),
+                      legend.text = element_text(size = 6),
+                      title = element_text(size = 7),
+                      axis.text = element_text(size = 7))
+
+# Combine the three plots using patchwork
+final_plot3 <- heatmap_plot7 + custom_theme +
+  heatmap_plot8 +  custom_theme +
+  heatmap_plot9 + custom_theme +
+  plot_layout(ncol = 3)  # Arra nge plots in a single column
+
+
+ggplot2::ggsave(paste0("output/", Sys.Date(),"_taggroup_level_count_heatmap.png"), final_plot3, height = 130, width = 220, units = "mm")
+
+```
+
+
+
+```{r tablulateRecommendations}
+inquiry %>%
+  DT::datatable(escape=FALSE,
+                extensions = 'Buttons',
+                filter = 'top',
+                options = list(
+                  dom = 'Bfrtip',
+                  buttons = c(I('colvis'), c('copy', 'csv', 'excel')),
+                  lengthMenu = c(10,100),
+                  pageLength = 187,
+                  scrollX = TRUE,
+                  searchHighlight = TRUE,
+                  autoWidth = TRUE
+                  #columnDefs=list(list(width="200px",targets=c(1,1,1,6,6,6))
+                )
+  ) %>%
+  DT::formatStyle(
+    1,
+    width = '50px !important'
+  ) %>%
+  DT::saveWidget(selfcontained = T, paste0("output/",Sys.Date(),"_recommendations_table.html"))
+
+
+
+```
+
