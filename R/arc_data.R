@@ -85,6 +85,8 @@ arc %>%
 
 HASS <- c(12,13,14,15,16,17,18,19,20,21,22,33,35,36,38,39,43,44,45,47,48,50,52)
 
+HASS_inchealth <- c(11,42,12,13,14,15,16,17,18,19,20,21,22,33,35,36,38,39,43,44,45,47,48,50,52)
+
 arc %>%
   mutate(FOR_two = stringr::str_sub(primary_field_of_research,1,2)) %>%
   filter(grepl("Artificial intelligence", paste0(grant_summary, national_interest_test_statement), ignore.case = T)) %>%
@@ -95,4 +97,14 @@ arc %>%
             total = sum(announced_funding_amount),
             count = n())
 
+
+arc %>%
+  mutate(FOR_two = stringr::str_sub(primary_field_of_research,1,2)) %>%
+  filter(grepl("Artificial intelligence", paste0(grant_summary, national_interest_test_statement), ignore.case = T)) %>%
+  group_by(FOR_two %in% HASS_inchealth) %>%
+  select(announced_funding_amount) %>%
+  summarise(mean = mean(announced_funding_amount),
+            sd = sd(announced_funding_amount),
+            total = sum(announced_funding_amount),
+            count = n())
 

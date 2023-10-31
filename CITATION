@@ -1,0 +1,11 @@
+genAIinquiry-version: 1
+message: "If you use this data, analysis, or code, please cite it as below."
+authors:
+- family-names: "Knight"
+  given-names: "Simon"
+  orcid: "https://orcid.org/0000-0002-8709-5780"
+title: "Generative AI in the Australian Education System: An Open Dataset of Stakeholder Recommendations and Emerging Analysis from a Public Inquiry"
+version: 1
+doi:
+date-released:
+url: "https://github.com/sjgknight/"

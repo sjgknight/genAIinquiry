@@ -8,7 +8,10 @@ editor_options:
 # Setup import data and process into tables
 
 ```{r setup}
-row_count <- 544
+# Ideally getting nrow would be part of function not hardcoded. Set row_count here for the key table (recommendations in this case)
+row_count <- 541 
+
+# Table IDs for each table
 reccos_id <- "183319"
 sources_id <- "183318"
 tag_id <- "184385"
@@ -17,24 +20,24 @@ challenges_id <- "183321"
 refs_id <- "183323"
 
 # Checks if pacman installed, and installs if not. Pacman is then used to check and load packages in the sourced scripts (largely tidyverse. Review before sourcing)
-
 if (!require("pacman")) install.packages("pacman")
 
 # Source some functions and packages 
 pacman::p_load(ggplot2, patchwork, glue, tibble)
 
-my_tables <- tribble(
-  ~name, ~id, ~row_count,
-  "recommendations", "183319", 536,
-  "sources", "183318", 94,
-  "tags", "184385", 36,
-  "opportunities", "183320", 463,
-  "challenges", "183321", 379,
-  "references", "183323", 749
-)
-
 source('R/baserow_functions.R')
 source('R/table_functions.R')
+
+# Create base table
+my_tables <- tribble(
+  ~name, ~id, ~row_count,
+  "recommendations", "183319", 541,
+  "sources", "183318", 95,
+  "tags", "184385", 36,
+  "opportunities", "183320", 466,
+  "challenges", "183321", 380,
+  "references", "183323", 750
+)
 
 # The data can be exported as excel formats from baserow but may be missing keys.
 # pacman::p_load(readxl)
@@ -48,22 +51,37 @@ source('R/table_functions.R')
 
 ```
 
+Three ways to import data:
+
+1. Individual tables, using the `table_data` function
+2. All tables in `my_tables` using the `table_data` function
+3. Using pre-downloaded `json` files, using the `jsonlite` package
 
 ```{r importdata}
-# Import key tables
-
 # If you want to get the raw JSON files (e.g., to publish them with code)
 # set raw = TRUE, this will save the JSON (hopefully correctly concatenated)
+savejson <- TRUE
+
+# Import key tables either individually, or by mapping over the my_tables tibble
+###############################################################################
+###############################################################################
+## Get individual tables
+###############################################################################
+###############################################################################
 # identical(tibble_data, y)
 # and import the data into a tidy R table 
 #tibble_data <- table_data(1, pages, table_id, raw = TRUE)
-# For single tables, like this is simple (raw defauls to FALSE so can be removed)
-savejson <- TRUE
+# For single tables, like this is simple (raw defaults to FALSE so can be removed)
 
 recommendations_data <- table_data(1, pages(row_count), reccos_id, raw = savejson)
-sources_data <- table_data(1,1,sources, raw = savejson) 
+sources_data <- table_data(1,1,sources_id, raw = savejson) 
 tags_data <- table_data(1,1,tag_id, raw = savejson)
 
+###############################################################################
+###############################################################################
+## Get all tables in my_tables
+###############################################################################
+###############################################################################
 # To get all tables, I can't see in documentation how to retrieve total rows (trying pages till it fails I guess works), so manually set that in the tribble and map over:
 result_list <- pmap(my_tables, function(name, id, row_count) {
   start <- 1
@@ -83,7 +101,12 @@ rm(result_list)
 ## If you the json files are from the function above (raw = TRUE) it's just a representation
 ## of the imported tables, not the original raw json. So this probably won't work to import that raw json either.
 raw_files <- list.files("data/", pattern = ".json", full.names = T)
-raw_names <- setNames(raw_files, map(raw_files, ~basename(.x) %>% tools::file_path_sans_ext())) %>% names() %>% map(., ~filter(my_tables, id == .x) %>% pull(name)) %>% unlist()
+raw_names <- setNames(raw_files, map(raw_files, ~basename(.x) %>% 
+                                       tools::file_path_sans_ext())) %>% 
+  names() %>% 
+  map(., ~filter(my_tables, id == .x) %>% 
+        pull(name)) %>% 
+  unlist()
 
 result_list <- map(raw_files, ~{
    .x %>%
@@ -97,7 +120,6 @@ list2env(result_list, envir = .GlobalEnv)
 #or for one
 # sources_data <- jsonlite::fromJSON("data/183318.json") %>% 
 #   as_tibble()
-
 
 ```
 
@@ -124,7 +146,6 @@ inquiry <- recommendations_data %>%
   group_by(id) %>%
   summarise(across(c(Recommendation, paste0(c("Sources", "Lookup", "Tags", "Tags_lookup"),"_value")),
                    ~paste(unlist(.x), collapse = ", "), .names = "{col}"), .groups = "drop")
-
 
 inquiry <- inquiry %>%
   rename_with(~str_remove(., "_value"), contains("_value"))
@@ -188,6 +209,7 @@ summarise_vars <- function(df, vars) {
     })
 }
 
+#produces a huxtable output
 summarise_vars(sources_data, c("recommendations", "risks_challenges", "uses_opportunities", "references_footnotes")) 
 
 # sources_data %>%
@@ -238,7 +260,7 @@ inquiry$Tags_lookup %>%
   table() %>%
   huxtable::as_hux() %>%
     my_hux_theme() %>%
-  huxtable::quick_html(file = paste0("output",Sys.Date(),"_tags_overall.html"))
+  huxtable::quick_html(file = paste0("output/",Sys.Date(),"_tags_overall.html"))
 
 ```
 
