@@ -96,10 +96,14 @@ result_list <- setNames(result_list, paste0(my_tables$name, "_data"))
 list2env(result_list, envir = .GlobalEnv)
 
 rm(result_list)
-
+###############################################################################
+###############################################################################
 ## If you have the json files and want to read them in, some variation on this
-## If you the json files are from the function above (raw = TRUE) it's just a representation
-## of the imported tables, not the original raw json. So this probably won't work to import that raw json either.
+## If the json files are from the function above (raw = TRUE) it's just a representation
+## of the imported tables, not the original raw json. So this may not work to import that raw json either.
+###############################################################################
+###############################################################################
+
 raw_files <- list.files("data/", pattern = ".json", full.names = T)
 raw_names <- setNames(raw_files, map(raw_files, ~basename(.x) %>% 
                                        tools::file_path_sans_ext())) %>% 
